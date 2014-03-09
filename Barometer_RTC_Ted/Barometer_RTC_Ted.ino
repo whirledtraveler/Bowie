@@ -82,9 +82,7 @@ void setup(void)
   Serial.begin(9600);
   
   pinMode(LED_PIN, OUTPUT);
-  digitalWrite(LED_PIN, HIGH);
-  pinMode(LED_ONBOARD, OUTPUT);
-  digitalWrite(LED_ONBOARD, HIGH); 
+  digitalWrite(LED_PIN, HIGH);  
   pinMode(RTC_SQW_IN, INPUT);
   pinMode(INT0_PIN, INPUT);
   
@@ -220,7 +218,7 @@ void loop(void)
 
     /* Then convert the atmospheric pressure, SLP and temp to altitude    */
     /* Update this next line with the current SLP for better results      */
-    float seaLevelPressure = 1020.3;
+    float seaLevelPressure = 1029.1;
     Serial.print("Altitude:    "); 
     Serial.print(bmp.pressureToAltitude(seaLevelPressure,
                                         event.pressure,
@@ -232,5 +230,5 @@ void loop(void)
   {
     Serial.println("Sensor error");
   }
-  delay(4500);
+  delay(2500);
 }
