@@ -4,7 +4,13 @@
   https://code.google.com/p/sdfatlib/downloads/list <-- sdfatlib20131225.zip
   Fixing the write-to-SD interval at 1 second (4 samples) since the write 
   time scales linearly with the buffer size, so there is no gain from increasing
-  the time between SD writes.
+  the time between SD writes. 
+  Moved all filename initialization code to the function initFileName so that
+  it can be called from anywhere in the program to generate a new filename 
+  based on the current date. 
+  Added code to keep track of day (oldday) and generate a new filename when
+  the new date is different from the day stored in oldday. This should start
+  a new output file every night at midnight. 
   
   v19 Implement a file naming scheme based on date + time from Chronodot
   DS3231 real time clock. Filenames will follow the pattern YYMMDDXX.CSV
@@ -126,7 +132,7 @@ byte loopCount = 0; // counter to keep track of data sampling loops
 volatile int f_wdt = 1; // TIMER2 flag (watchdog or TIMER2 counter)
 volatile int mscount = 0; // millisecond count for timestamp
 DateTime oldtime; // used to track time in main loop
-
+uint8_t oldday; // used to track when a new day starts
 
 RTC_DS3231 RTC;
 MS_5803 sensor = MS_5803(512);
@@ -177,48 +183,16 @@ void setup() {
   Serial.println(F("SD initialization done."));
   #endif
   
-  // create new file on SD card
-  // Start by writing the year+month+day in filename array
-  // using the initFileName function (full function near bottom of this program)
+  // Create new file on SD card using initFileName() function
+  // This creates a filename based on the year + month + day
+  // with a number indicating which number file this is on 
+  // the given day. The format of the filename is
+  // YYMMDDXX.CSV where XX is the counter (00-99). The
+  // function also writes the column headers to the new file. 
   initFileName(starttime);
-  // Next change the counter on the end of the filename
-  // (digits 6+7) to increment count for files generated on 
-  // the same day
-  for (uint8_t i = 0; i < 100; i++){
-   filename[6] = i/10 + '0';
-   filename[7] = i%10 + '0';
-   if (!sd.exists(filename)){
-     // when sd.exists() returns false, this block
-     // of code will be executed to open the file
-     if (!logfile.open(filename, O_RDWR | O_CREAT | O_AT_END)) {
-       // If there is an error opening the file, notify the 
-       // user. Otherwise, the file is open and ready for writing
-        #if ECHO_TO_SERIAL 
-        sd.errorHalt("opening file for write failed");
-        #endif
-        // Turn both inidicator LEDs on to indicate a failure
-        // to create the log file
-        bitSet(PINB,0); // Toggle error led on PINB0 (D8 Arduino)
-        bitSet(PINB,1); // Toggle indicator led on PINB1 (D9 Arduino)       
-     }
-     break; // Break out of the for loop when the 
-            // statement if(!logfile.exists())
-            // is finally false (i.e. you found a new 
-            // file name to use). 
-   } // end of if(!sd.exists())
-  } // end of file-naming for loop
   
-  #if ECHO_TO_SERIAL
-  Serial.print(F("Logging to: "));
-  Serial.println(filename);
-  #endif
-  // write a header line to the SD file
-  logfile.println(F("POSIXt,DateTime,ms,Pressure.mbar,TempC"));
-  logfile.close();
-  
-
-
-  sensor.initializeMS_5803(); // Start MS5803 pressure sensor
+  // Start MS5803 pressure sensor
+  sensor.initializeMS_5803(); 
   
   TIMSK2 = 0; // stop timer 2 interrupts
 
@@ -244,11 +218,18 @@ void setup() {
   //  TCCR2B = 0;  // No clock source (Timer/Counter2 stopped)
   //  TCCR2B = _BV(CS20) ; // no prescaler -- TCNT2 will overflow once every 0.007813 seconds (128Hz)  
   //  TCCR2B = _BV(CS21) ; // prescaler clk/8 -- TCNT2 will overflow once every 0.0625 seconds (16Hz)
-  TCCR2B = _BV(CS21) | _BV(CS20); // prescaler clk/32 -- TCNT2 will overflow once every 0.25 seconds
+  #if SAMPLES_PER_SECOND == 4 
+    TCCR2B = _BV(CS21) | _BV(CS20); // prescaler clk/32 -- TCNT2 will overflow once every 0.25 seconds
+  #endif
+  
+//  #if SAMPLES_PER_SECOND == 2
 //    TCCR2B = _BV(CS22) ; // prescaler clk/64 -- TCNT2 will overflow once every 0.5 seconds
+//  #endif
+  
   //  TCCR2B = _BV(CS22) | _BV(CS20); // prescaler clk/128 -- TCNT2 will overflow once every 1 seconds
 //  TCCR2B = _BV(CS22) | _BV(CS21); // prescaler clk/256 -- TCNT2 will overflow once every 2 seconds
 //   TCCR2B = _BV(CS22) | _BV(CS21) | _BV(CS20) ; // prescaler clk/1024 -- TCNT2 will overflow once every 8 seconds
+  
   TCNT2 = 0; // start the timer at zero
   while (ASSR & (_BV(TCN2UB) | _BV(TCR2AUB) | _BV(TCR2BUB))) {} // wait for the registers to be updated
   TIFR2 = _BV(OCF2B) | _BV(OCF2A) | _BV(TOV2); // clear the interrupt flags
@@ -268,6 +249,7 @@ void setup() {
   }
   TCNT2 = 0; // reset the TIMER2 counter at zero again
   oldtime = RTC.now(); // get starting time
+  oldday = oldtime.day(); // get starting day value
 }
 
 //--------------------------------------------------------------
@@ -280,6 +262,8 @@ void loop() {
   if(f_wdt == 1) {
     f_wdt = 0; // reset interrupt flag
 //    bitSet(PINB,1); // used to visualize timing with LED or oscilloscope 
+
+    // Get a new time reading from the real time clock
     DateTime newtime = RTC.now();
     // Check to see if the current second value
     // is equal to oldtime.second(). If so, we
@@ -307,6 +291,14 @@ void loop() {
     // (minus 1 for zero-based counting), then write out the contents
     // of the sample data arrays to the SD card.
     if (loopCount >= (SAMPLE_BUFFER - 1)){
+      // Check to see if a new day has started. If so, open a new file
+      // with the initFileName() function
+      if (oldtime.day() != oldday) {
+        // Generate a new output filename based on the new date
+        initFileName(oldtime);
+        // Update oldday value to match the new day
+        oldday = oldtime.day();
+      }
 //      bitSet(PINB,1); // used to visualize timing with LED or oscilloscope
       // Call the writeToSD function to output the data array contents
       // to the SD card
@@ -358,32 +350,22 @@ void loop() {
   attachInterrupt (0, endRun, LOW);
   
   goToSleep(); // call the goToSleep function (below)
-  }
+  } // end of if(f_wdt == 1) statement
   
 }
 // END OF MAIN LOOP
 //--------------------------------------------------------------
 
+
+//--------------------------------------------------------------
 // OTHER FUNCTIONS
-//----------------------------------------------------
-// error function.
-// Define an error function to print any errors to 
-// the serial monitor
-void error(char *str){
- #if ECHO_TO_SERIAL 
- Serial.print("error: ");
- Serial.println(str);
- #endif 
- digitalWrite(ERRLED, HIGH); // light permanently
- while(1); 
-}
 
 //--------------------------------------------------------------
 // writeToSD function. This formats the available data in the
 // data arrays and writes them to the SD card file in a 
 // comma-separated value format. 
 void writeToSD (void) {
-  bitSet(PIND,7); // Toggle Arduino pin 7
+  bitSet(PIND,7); // Toggle Arduino pin 7 for oscilloscope monitoring
     // Reopen logfile. If opening fails, notify the user
   if (!logfile.open(filename, O_RDWR | O_CREAT | O_AT_END)) {
       bitSet(PINB,0); // toggle ERRLED to show error
@@ -422,10 +404,10 @@ void writeToSD (void) {
       logfile.print(F(","));
       // Write out temperature in Celsius
       logfile.println(tempCArray[i], DEC);
-      logfile.sync();
+      logfile.sync(); // flush all data to SD card
    }   
   logfile.close(); // close file again
-  bitSet(PIND,7); // Toggle Arduino pin 7
+  bitSet(PIND,7); // Toggle Arduino pin 7 for oscilloscope monitoring
 }
 
 //------------------------------------------------------------------------
@@ -450,10 +432,46 @@ void initFileName(DateTime currenttime){
     filename[4] = (currenttime.day() / 10) + '0';
     filename[5] = (currenttime.day() % 10) + '0';
   }
-}
+  // Next change the counter on the end of the filename
+  // (digits 6+7) to increment count for files generated on 
+  // the same day
+  for (uint8_t i = 0; i < 100; i++){
+   filename[6] = i/10 + '0';
+   filename[7] = i%10 + '0';
+   if (!sd.exists(filename)){
+     // when sd.exists() returns false, this block
+     // of code will be executed to open the file
+     if (!logfile.open(filename, O_RDWR | O_CREAT | O_AT_END)) {
+       // If there is an error opening the file, notify the 
+       // user. Otherwise, the file is open and ready for writing
+        #if ECHO_TO_SERIAL 
+        sd.errorHalt("opening file for write failed");
+        #endif
+        // Turn both inidicator LEDs on to indicate a failure
+        // to create the log file
+        bitSet(PINB,0); // Toggle error led on PINB0 (D8 Arduino)
+        bitSet(PINB,1); // Toggle indicator led on PINB1 (D9 Arduino)       
+     }
+     break; // Break out of the for loop when the 
+            // statement if(!logfile.exists())
+            // is finally false (i.e. you found a new 
+            // file name to use). 
+   } // end of if(!sd.exists())
+  } // end of file-naming for loop
+  #if ECHO_TO_SERIAL
+  Serial.print(F("Logging to: "));
+  Serial.println(filename);
+  #endif
+  // write a header line to the SD file
+  logfile.println(F("POSIXt,DateTime,ms,Pressure.mbar,TempC"));
+  // Sync and close the logfile for now. 
+  logfile.sync();
+  logfile.close();
+  
+} // end of initFileName function
 //------------------------------------------------------------------
 
-// This Interrupt Service Routine (ISR)is called every time the
+// This Interrupt Service Routine (ISR) is called every time the
 // TIMER2_OVF_vect goes high (=1), which happens when Timer2
 // overflows. The ISR doesn't care if the AVR is awake or
 // in SLEEP_MODE_PWR_SAVE, it will still roll over and run this
@@ -480,7 +498,6 @@ void goToSleep()
     adcsra = ADCSRA; //save the ADC Control and Status Register A
     ADCSRA = 0; //disable ADC
     sleep_enable();
-
     
     // Do not interrupt before we go to sleep, or the
     // ISR will detach interrupts and we won't wake.
@@ -519,7 +536,7 @@ void endRun ()
   interrupts(); // reenable global interrupts (including TIMER0 for millis)
   TIMSK2 = 0; // stop timer 2 interrupts
   
-  logfile.close(); // close file again just to be sure   
+  logfile.close(); // close file again just to be sure
   digitalWrite(LED, LOW); // Turn off LED if it was on
   //--------------------------------------------------------------------------
   // Set up Watchdog timer for long term sleep
@@ -599,8 +616,8 @@ void goToSleepPermanently (void){
 
 //---------------------------------------------------------------------------
 // freeRam function. Used to report back on the current available RAM while
-// the sketch is running. A 328P AVR has only 1024 bytes of RAM available
-// so this should return a value between 0 and 1024. If RAM drops to
+// the sketch is running. A 328P AVR has only 2048 bytes of RAM available
+// so this should return a value between 0 and 2048. If RAM drops to
 // zero you will start seeing weird behavior as bits of memory are accidentally
 // overwritten, destroying normal functioning in the process. 
 int freeRam () {
