@@ -147,7 +147,7 @@ DS3231 32kHz ---(XTAL1 / TOSC1)  PB6  |9       20|  AVCC
 #include <Wire.h>
 #include <RTClib.h>
 #include <RTC_DS3231.h>
-#include <MS5803_05.h>
+#include <MS5803_14.h>
 #include <SdFat.h>
 
 #include <avr/interrupt.h>
