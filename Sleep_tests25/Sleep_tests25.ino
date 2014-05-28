@@ -68,7 +68,7 @@
 
   Hardware:
   ATMEGA328P on a breadboard, with bootloader set to run on internal
-  8MHz oscillator. LED on pin D9. Powered from a 3V3 regulator.
+  8MHz oscillator. LED on pins D8 + D9. Powered from a 3V3 regulator.
 
                                        +---\/---+                      10k ohm
     GND---BUTTON--------(RESET)  PC6  |1       28|  PC5  (ADC5 / SCL) --/\/\-- +3V3
@@ -77,10 +77,10 @@
     GND---BUTTON---------(INT0)  PD2  |4       25|  PC2  (ADC2)
                          (INT1)  PD3  |5       24|  PC1  (ADC1)
                      (XCK / T0)  PD4  |6       23|  PC0  (ADC0)
-                                 VCC  |7       22|  GND
+                  +3.3V -------  VCC  |7       22|  GND
                                  GND  |8       21|  AREF
-32k crystal ----(XTAL1 / TOSC1)  PB6  |9       20|  AVCC
-32k crystal ----(XTAL2 / TOSC2)  PB7  |10      19|  PB5  (SCK) --- CLK on SD Card
+DS3231 32kHz ---(XTAL1 / TOSC1)  PB6  |9       20|  AVCC
+                (XTAL2 / TOSC2)  PB7  |10      19|  PB5  (SCK) --- CLK on SD Card
                            (T1)  PD5  |11      18|  PB4  (MISO) --- D0 on SD Card
                          (AIN0)  PD6  |12      17|  PB3  (MOSI / OC2) --- DI on SD Card
                          (AIN1)  PD7  |13      16|  PB2  (SS / OC1B) --- CS on SD Card
@@ -92,32 +92,27 @@
 
   Communicating via FTDI Friend at 57600 bps.
 
-  Chronodot hooked up via I2C to pins A4 + A5 (SDA + SCL), along
+  Chronodot DS3231 hooked up via I2C to pins A4 + A5 (SDA + SCL), along
   with 10k ohm pull-up resistors to 3V3.
-
-  32.768kHz watch crystal hooked up to XTAL1/XTAL2 to run TIMER2
-  (physical pins 9 + 10 on 28-pin AVR DIP chip)
+  Chronodot DS3231 32.768kHz output pin hooked to XTAL1, with 10kOhm
+  pull-up resistor to +Vcc.
 
   MS5803 pressure sensor hooked up via I2C:
                --------------
-   SCL     ---|1   MS5803  8|--- NC
-   GND     ---|2           7|--- SDA
-   +3V3    ---|3           6|--- +3V3
-   NC      ---|4           5|--- +3V3
-              ---------------
+   SCL     ---|1   MS5803   8|--- NC
+   GND     ---|2            7|--- SDA
+   +3V3    ---|3            6|--- +3V3
+   NC      ---|4            5|--- +3V3
+               --------------
   (NC = no connection)
   -------------------------------------------------------------------
   The sketch:
-  During setup, we disable the Chronodot's 32.768kHz
-  output. A separate 32.768kHz crystal oscillator is hooked to XTAL1/XTAL2
-  to provide the timed interrupt. This saves power compared to having
-  the Chronodot 32.768 pin running (the SQW pin also pulls current and
-  so we make sure it is also disabled during setup).
-
-  Then we write to the Asynchronous Timer Counter register (ASSR)
-  to use AS2. The AVR will then expect a clock signal on
-  pin XTAL1/XTAL2 (AVR pin 9+10 on the 328P DIP package) that will be
-  monitored by TIMER2, an 8-bit (0-255) counter.
+  During setup, we enable the Chronodot's 32.768kHz 
+  output (as of v24, instead of using a separate 32.768kHz crystal 
+  oscillator) hooked to XTAL1
+  to provide the timed interrupt. The Chronodot 32kHz pin should be
+  connected to XTAL1, with a 10kOhm pull-up resistor 
+  between XTAL1 and +Vcc (3.3V). 
 
   We set the prescaler on TIMER2 so that it only interrupts
   every 0.25 second (see commented code below for other prescaler
@@ -134,6 +129,18 @@
   duration of the sleep vs. wake cycles with an oscilloscope.
   bitSet(PINB,1) is the equivalent of Arduino's
   digitalWrite(9, !digitalRead(9)), but much faster.
+  
+  Change the STARTMINUTE and DATADURATION values in the preamble
+  below to set when the unit should wake up and start taking 
+  data, and for how long during each hour it should take data.
+  For example, STARTMINUTE = 0 and DATADURATION = 30 would 
+  take data every hour starting at minute 00, and record 30 
+  minutes worth of data. For continuous recording, set 
+  STARTMINUTE = 0 and DATADURATION = 60. 
+  
+  When not recording, the sketch goes into a lower power 
+  sleep (lowPowerSleep) mode using the watchdog timer set 
+  to 8 second timeouts to conserve power further.
 
  */
 #include <SPI.h>
